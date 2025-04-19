@@ -1,0 +1,9 @@
+# Git LFS configuration: track large binary files in models and data directories
+models/*.keras filter=lfs diff=lfs merge=lfs -text
+models/*.h5    filter=lfs diff=lfs merge=lfs -text
+data/**/*.png  filter=lfs diff=lfs merge=lfs -text
+data/**/*.jpg  filter=lfs diff=lfs merge=lfs -text
+data/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+data/**/*.gif  filter=lfs diff=lfs merge=lfs -text
+data/**/*.bmp  filter=lfs diff=lfs merge=lfs -text
+data/**/*.webp filter=lfs diff=lfs merge=lfs -text

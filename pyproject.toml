@@ -1,0 +1,14 @@
+[project]
+name = "thundrmodels"
+version = "0.1.0"
+description = "Utilities and scripts used to create the thundr textzap and imagezap models."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.11.16",
+    "ipykernel>=6.29.5",
+    "jsonlines>=4.0.0",
+    "matplotlib>=3.10.1",
+    "pillow>=11.2.1",
+    "tensorflow[and-cuda]>=2.19.0",
+]
