@@ -1,0 +1,107 @@
+from pydantic import BaseModel
+import numpy as np
+import os
+import json
+import re
+from fastapi import FastAPI
+from pathlib import Path
+import io
+
+from typing_extensions import Annotated
+from fastapi import FastAPI, File, UploadFile
+
+from PIL import Image
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+import tensorflow as tf
+
+textzap_labels = ['company overview', 'company services', 'client review', 'other', 'contact info']
+textzap = tf.keras.models.load_model("./models/textzap.keras")
+imagezap_labels = ['certification', 'icons', 'logo', 'other', 'people', 'project image']
+imagezap = tf.keras.models.load_model("./models/imagezap.keras")
+
+class TextRequest(BaseModel):
+    requests: list[str]
+
+class ImageRequest(BaseModel):
+    requests: str
+
+MAX_SEQ_LEN = 200
+IMAGE_HEIGHT = 400
+IMAGE_WIDTH = 400
+IMAGE_CHANNELS = 3
+
+def create_text_processor(word_index, max_length):
+    filters = r'[!"#$%&()*+,\-./:;<=>?@\[\\\]^_`{|}~\t\n]'
+    def text_to_sequence(text):
+        cleaned = re.sub(filters, ' ', text.lower())
+        tokens = [w for w in cleaned.split() if w]
+        seq = [word_index.get(w, 0) for w in tokens]
+        seq = [i for i in seq if i != 0][:max_length]
+        return seq
+    return text_to_sequence
+def pad_sequence(seq, max_length):
+    padded = np.zeros(max_length, dtype=np.int32)
+    length = min(len(seq), max_length)
+    padded[:length] = seq[:length]
+    return padded
+with open('./data/vocab.json', 'r', encoding='utf-8') as f:
+    tokenizer = json.load(f)
+word_index = tokenizer.get('word_index', {})
+text_to_sequence = create_text_processor(word_index, MAX_SEQ_LEN)
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return "thundrmodels server"
+
+@app.post("/textzap")
+def textzap_route(text_request: TextRequest):
+    processed = []
+    for request in text_request.requests:
+        seq = text_to_sequence(request)
+        processed.append(pad_sequence(seq, MAX_SEQ_LEN))
+    predictions = textzap.predict(np.array(processed)).tolist()
+    results = []
+    for prediction in predictions:
+        obj = {}
+        for i in range(len(prediction)):
+            obj[textzap_labels[i]] = prediction[i]
+        results.append(obj)
+    return results
+
+@app.post("/imagezap")
+def textzap_route(files: list[UploadFile] = File(...)):
+    images = []
+    for file in files:
+        contents = file.file.read()
+        image = Image.open(io.BytesIO(contents))
+        # Ensure image is in RGBA for proper transparency handling
+        image = image.convert("RGBA")
+        # Create a new 400x400 background with pink color
+        bg_color = (255, 39, 255)
+        new_img = Image.new("RGB", (400, 400), bg_color)
+        image.thumbnail((400, 400), Image.LANCZOS)
+        # Calculate coordinates to center the image on the background
+        left = (400 - image.width) // 2
+        top = (400 - image.height) // 2
+        # Paste the resized image onto the off-gray background using the image's alpha channel as mask
+        new_img.paste(image, (left, top), image)
+        byte_img = io.BytesIO()
+        new_img.save(byte_img, format='PNG')
+        byte_img = byte_img.getvalue()
+        img_tensor = tf.constant(byte_img)
+        decoded_img_tensor = tf.image.decode_image(img_tensor, channels=IMAGE_CHANNELS)
+        decoded_img_tensor.set_shape([None, None, IMAGE_CHANNELS])
+        decoded_img_tensor = tf.image.resize(decoded_img_tensor, [IMAGE_WIDTH, IMAGE_HEIGHT])
+        decoded_img_tensor = tf.cast(decoded_img_tensor, tf.float32) / 255.0
+        images.append(decoded_img_tensor)
+    predictions = imagezap.predict(np.array(images)).tolist()
+    results = []
+    for prediction in predictions:
+        obj = {}
+        for i in range(len(prediction)):
+            obj[imagezap_labels[i]] = prediction[i]
+        results.append(obj)
+    return results
