@@ -6,6 +6,8 @@ import re
 from fastapi import FastAPI
 from pathlib import Path
 import io
+import asyncio
+import aiohttp
 
 from typing_extensions import Annotated
 from fastapi import FastAPI, File, UploadFile
@@ -24,7 +26,7 @@ class TextRequest(BaseModel):
     requests: list[str]
 
 class ImageRequest(BaseModel):
-    requests: str
+    images: list[str]
 
 MAX_SEQ_LEN = 200
 IMAGE_HEIGHT = 400
@@ -50,6 +52,13 @@ with open('./data/vocab.json', 'r', encoding='utf-8') as f:
 word_index = tokenizer.get('word_index', {})
 text_to_sequence = create_text_processor(word_index, MAX_SEQ_LEN)
 
+async def download_image(url):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            image_bytes = await response.read()
+    return image_bytes
+
 app = FastAPI()
 
 @app.get("/")
@@ -72,32 +81,38 @@ def textzap_route(text_request: TextRequest):
     return results
 
 @app.post("/imagezap")
-def textzap_route(files: list[UploadFile] = File(...)):
-    images = []
-    for file in files:
-        contents = file.file.read()
-        image = Image.open(io.BytesIO(contents))
-        # Ensure image is in RGBA for proper transparency handling
-        image = image.convert("RGBA")
-        # Create a new 400x400 background with pink color
-        bg_color = (255, 39, 255)
-        new_img = Image.new("RGB", (400, 400), bg_color)
-        image.thumbnail((400, 400), Image.LANCZOS)
-        # Calculate coordinates to center the image on the background
-        left = (400 - image.width) // 2
-        top = (400 - image.height) // 2
-        # Paste the resized image onto the off-gray background using the image's alpha channel as mask
-        new_img.paste(image, (left, top), image)
-        byte_img = io.BytesIO()
-        new_img.save(byte_img, format='PNG')
-        byte_img = byte_img.getvalue()
-        img_tensor = tf.constant(byte_img)
-        decoded_img_tensor = tf.image.decode_image(img_tensor, channels=IMAGE_CHANNELS)
-        decoded_img_tensor.set_shape([None, None, IMAGE_CHANNELS])
-        decoded_img_tensor = tf.image.resize(decoded_img_tensor, [IMAGE_WIDTH, IMAGE_HEIGHT])
-        decoded_img_tensor = tf.cast(decoded_img_tensor, tf.float32) / 255.0
-        images.append(decoded_img_tensor)
-    predictions = imagezap.predict(np.array(images)).tolist()
+async def textzap_route(image_request: ImageRequest):
+    image_data = []
+    async with asyncio.TaskGroup() as tg:
+        tasks = []
+        for url in image_request.images:
+            tasks.append(tg.create_task(download_image(url)))
+        for downloaded_image in asyncio.as_completed(tasks):
+            image_data.append(await downloaded_image)
+    image_tensors = []
+    for image_bytes in image_data:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            # Ensure image is in RGBA for proper transparency handling
+            image = image.convert("RGBA")
+            # Create a new 400x400 background with pink color
+            bg_color = (255, 39, 255)
+            new_img = Image.new("RGB", (400, 400), bg_color)
+            image.thumbnail((400, 400), Image.LANCZOS)
+            # Calculate coordinates to center the image on the background
+            left = (400 - image.width) // 2
+            top = (400 - image.height) // 2
+            # Paste the resized image onto the off-gray background using the image's alpha channel as mask
+            new_img.paste(image, (left, top), image)
+            byte_img = io.BytesIO()
+            new_img.save(byte_img, format='PNG')
+            byte_img = byte_img.getvalue()
+            img_tensor = tf.constant(byte_img)
+            decoded_img_tensor = tf.image.decode_image(img_tensor, channels=IMAGE_CHANNELS)
+            decoded_img_tensor.set_shape([None, None, IMAGE_CHANNELS])
+            decoded_img_tensor = tf.image.resize(decoded_img_tensor, [IMAGE_WIDTH, IMAGE_HEIGHT])
+            decoded_img_tensor = tf.cast(decoded_img_tensor, tf.float32) / 255.0
+            image_tensors.append(decoded_img_tensor)
+    predictions = imagezap.predict(np.array(image_tensors)).tolist()
     results = []
     for prediction in predictions:
         obj = {}
