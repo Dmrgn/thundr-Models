@@ -82,6 +82,7 @@ def textzap_route(text_request: TextRequest):
 
 @app.post("/imagezap")
 async def textzap_route(image_request: ImageRequest):
+    # download images
     image_data = []
     async with asyncio.TaskGroup() as tg:
         tasks = []
@@ -89,6 +90,7 @@ async def textzap_route(image_request: ImageRequest):
             tasks.append(tg.create_task(download_image(url)))
         for downloaded_image in asyncio.as_completed(tasks):
             image_data.append(await downloaded_image)
+    # preprocess images
     image_tensors = []
     for image_bytes in image_data:
         with Image.open(io.BytesIO(image_bytes)) as image:
@@ -112,7 +114,9 @@ async def textzap_route(image_request: ImageRequest):
             decoded_img_tensor = tf.image.resize(decoded_img_tensor, [IMAGE_WIDTH, IMAGE_HEIGHT])
             decoded_img_tensor = tf.cast(decoded_img_tensor, tf.float32) / 255.0
             image_tensors.append(decoded_img_tensor)
+    # make predictions
     predictions = imagezap.predict(np.array(image_tensors)).tolist()
+    # format predictions
     results = []
     for prediction in predictions:
         obj = {}
