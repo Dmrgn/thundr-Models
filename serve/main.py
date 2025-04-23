@@ -122,14 +122,16 @@ async def textzap_route(image_request: ImageRequest):
     results = []
     for i, prediction in enumerate(predictions):
         obj = {}
+        prediction_obj = {}
         for j in range(len(prediction)):
-            obj[imagezap_labels[j]] = prediction[j]
+            prediction_obj[imagezap_labels[j]] = prediction[j]
         # do ocr on logos
-        if obj['logo'] >= 0.3:
+        if prediction_obj['logo'] >= 0.3:
             ocr_result = reader.readtext(image_data[i])
             text = ""
             for ocr_item in ocr_result:
                 text += ocr_item[1] + " "
             obj['ocr'] = text.strip()
+        obj['predictions'] = prediction_obj
         results.append(obj)
     return results
