@@ -18,8 +18,8 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 import tensorflow as tf
 
 textzap_labels = ['company overview', 'company services', 'client review', 'other', 'contact info']
-textzap = tf.keras.models.load_model("./models/textzap.keras")
 imagezap_labels = ['certification', 'icons', 'logo', 'other', 'people', 'project image']
+textzap = tf.keras.models.load_model("./models/textzap.keras")
 imagezap = tf.keras.models.load_model("./models/imagezap.keras")
 
 class TextRequest(BaseModel):
