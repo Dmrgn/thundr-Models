@@ -5,6 +5,7 @@ import json
 import re
 from fastapi import FastAPI
 from pathlib import Path
+import uuid
 import io
 import asyncio
 import aiohttp
@@ -54,12 +55,12 @@ with open('./data/vocab.json', 'r', encoding='utf-8') as f:
 word_index = tokenizer.get('word_index', {})
 text_to_sequence = create_text_processor(word_index, MAX_SEQ_LEN)
 
-async def download_image(url):
+async def download_image(url, image_id):
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
             response.raise_for_status()
             image_bytes = await response.read()
-    return image_bytes
+    return (image_id, image_bytes)
 
 app = FastAPI()
 
@@ -85,13 +86,18 @@ def textzap_route(text_request: TextRequest):
 @app.post("/imagezap")
 async def textzap_route(image_request: ImageRequest):
     # download images
-    image_data = []
+    id_to_index = {}
+    image_data = [None for x in range(len(image_request.images))]
     async with asyncio.TaskGroup() as tg:
         tasks = []
-        for url in image_request.images:
-            tasks.append(tg.create_task(download_image(url)))
+        for i, url in enumerate(image_request.images):
+            image_id = uuid.uuid4()
+            id_to_index[image_id] = i
+            tasks.append(tg.create_task(download_image(url, image_id)))
         for downloaded_image in asyncio.as_completed(tasks):
-            image_data.append(await downloaded_image)
+            image_id, image_bytes = await downloaded_image
+            image_data[id_to_index[image_id]] = image_bytes
+    # print(image_data)
     # preprocess images
     image_tensors = []
     for image_bytes in image_data:
@@ -120,7 +126,7 @@ async def textzap_route(image_request: ImageRequest):
     predictions = imagezap.predict(np.array(image_tensors)).tolist()
     # format predictions
     results = []
-    for i, prediction in enumerate(predictions):
+    for prediction in predictions:
         obj = {}
         for j in range(len(prediction)):
             obj[imagezap_labels[j]] = prediction[j]
