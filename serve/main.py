@@ -13,10 +13,10 @@ from typing_extensions import Annotated
 from fastapi import FastAPI, File, UploadFile
 
 from PIL import Image
-import easyocr
-reader = easyocr.Reader(['en'])
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+# import easyocr
+# reader = easyocr.Reader(['en'])
 import tensorflow as tf
 
 textzap_labels = ['company overview', 'company services', 'client review', 'other', 'contact info']
@@ -122,16 +122,7 @@ async def textzap_route(image_request: ImageRequest):
     results = []
     for i, prediction in enumerate(predictions):
         obj = {}
-        prediction_obj = {}
         for j in range(len(prediction)):
-            prediction_obj[imagezap_labels[j]] = prediction[j]
-        # do ocr on logos
-        if prediction_obj['logo'] >= 0.3:
-            ocr_result = reader.readtext(image_data[i])
-            text = ""
-            for ocr_item in ocr_result:
-                text += ocr_item[1] + " "
-            obj['ocr'] = text.strip()
-        obj['predictions'] = prediction_obj
+            obj[imagezap_labels[j]] = prediction[j]
         results.append(obj)
     return results
