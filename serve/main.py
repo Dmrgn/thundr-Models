@@ -55,12 +55,49 @@ with open('./data/vocab.json', 'r', encoding='utf-8') as f:
 word_index = tokenizer.get('word_index', {})
 text_to_sequence = create_text_processor(word_index, MAX_SEQ_LEN)
 
-async def download_image(url, image_id):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            response.raise_for_status()
-            image_bytes = await response.read()
-    return (image_id, image_bytes)
+import aiohttp
+import asyncio
+
+async def download_image( url: str, max_retries: int = 4, backoff_factor: float = 1.5) -> bytes | str:
+    retry_statuses = {429, 502, 503, 504}
+    for attempt in range(max_retries + 1):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        image_bytes = await response.read()
+                        return image_bytes
+                    if response.status in retry_statuses:
+                        delay = backoff_factor * (2 ** attempt)
+                        await asyncio.sleep(delay)
+                        print(f"error occured, retrying {attempt}")
+                        continue
+                    # non-retryable HTTP error, they don't like us anymore :(
+                    raise Exception
+        except aiohttp.ClientError:
+            # network error – treat as retryable
+            delay = backoff_factor * (2 ** attempt)
+            print(f"client error occured, retrying {attempt}")
+            await asyncio.sleep(delay)
+            continue
+    print(f"error occured, unable to retry")
+    # all retries exhausted
+    raise Exception
+
+def preprocess_image_bytes(image_bytes: bytes) -> tf.Tensor:
+    # resize and set pink background
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        img = img.convert("RGBA")
+        bg = Image.new("RGB", (400, 400), (255, 39, 255))
+        img.thumbnail((400, 400), Image.LANCZOS)
+        left = (400 - img.width) // 2
+        top  = (400 - img.height) // 2
+        bg.paste(img, (left, top), img)
+        buf = io.BytesIO()
+        bg.save(buf, format="PNG")
+        tensor = tf.image.decode_image(buf.getvalue(), channels=IMAGE_CHANNELS)
+        tensor = tf.image.resize(tensor, [IMAGE_WIDTH, IMAGE_HEIGHT])
+        return tf.cast(tensor, tf.float32) / 255.0
 
 app = FastAPI()
 
@@ -84,51 +121,86 @@ def textzap_route(text_request: TextRequest):
     return results
 
 @app.post("/imagezap")
-async def textzap_route(image_request: ImageRequest):
-    # download images
-    id_to_index = {}
-    image_data = [None for x in range(len(image_request.images))]
-    async with asyncio.TaskGroup() as tg:
-        tasks = []
-        for i, url in enumerate(image_request.images):
-            image_id = uuid.uuid4()
-            id_to_index[image_id] = i
-            tasks.append(tg.create_task(download_image(url, image_id)))
-        for downloaded_image in asyncio.as_completed(tasks):
-            image_id, image_bytes = await downloaded_image
-            image_data[id_to_index[image_id]] = image_bytes
-    # print(image_data)
-    # preprocess images
-    image_tensors = []
-    for image_bytes in image_data:
-        with Image.open(io.BytesIO(image_bytes)) as image:
-            # Ensure image is in RGBA for proper transparency handling
-            image = image.convert("RGBA")
-            # Create a new 400x400 background with pink color
-            bg_color = (255, 39, 255)
-            new_img = Image.new("RGB", (400, 400), bg_color)
-            image.thumbnail((400, 400), Image.LANCZOS)
-            # Calculate coordinates to center the image on the background
-            left = (400 - image.width) // 2
-            top = (400 - image.height) // 2
-            # Paste the resized image onto the off-gray background using the image's alpha channel as mask
-            new_img.paste(image, (left, top), image)
-            byte_img = io.BytesIO()
-            new_img.save(byte_img, format='PNG')
-            byte_img = byte_img.getvalue()
-            img_tensor = tf.constant(byte_img)
-            decoded_img_tensor = tf.image.decode_image(img_tensor, channels=IMAGE_CHANNELS)
-            decoded_img_tensor.set_shape([None, None, IMAGE_CHANNELS])
-            decoded_img_tensor = tf.image.resize(decoded_img_tensor, [IMAGE_WIDTH, IMAGE_HEIGHT])
-            decoded_img_tensor = tf.cast(decoded_img_tensor, tf.float32) / 255.0
-            image_tensors.append(decoded_img_tensor)
-    # make predictions
-    predictions = imagezap.predict(np.array(image_tensors)).tolist()
-    # format predictions
-    results = []
-    for prediction in predictions:
-        obj = {}
-        for j in range(len(prediction)):
-            obj[imagezap_labels[j]] = prediction[j]
-        results.append(obj)
+async def imagezap_route(image_request: ImageRequest):
+    urls = image_request.images
+
+    # 1) download in parallel
+    coros     = [download_image(u) for u in urls]
+    downloads = await asyncio.gather(*coros, return_exceptions=True)
+
+    # 2) build a record for each successful download,
+    #    storing index, raw bytes, resolution, and preprocessed tensor
+    records = []
+    for idx, result in enumerate(downloads):
+        if isinstance(result, Exception):
+            continue
+
+        image_bytes = result
+        # get original size
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            w, h = img.size
+
+        # preprocess to a TF tensor
+        tensor = preprocess_image_bytes(image_bytes)
+
+        records.append({
+            "idx": idx,
+            "bytes": image_bytes,
+            "size": w * h,
+            "tensor": tensor
+        })
+
+    # if nothing downloaded, return all-zero labels
+    if not records:
+        return [
+            {label: 0.0 for label in imagezap_labels}
+            for _ in urls
+        ]
+
+    # 3) batch-predict
+    batch = tf.stack([r["tensor"] for r in records], axis=0)
+    preds = imagezap.predict(batch).tolist()
+    for rec, p in zip(records, preds):
+        rec["pred"] = np.array(p)
+
+    # 4) cluster by prediction distance, picking largest first
+    threshold = 0.07  # tune this: max distance to call "duplicate"
+    # sort desc by area
+    records.sort(key=lambda r: r["size"], reverse=True)
+
+    assigned = set()
+    clusters = []  # each cluster is list of recs
+
+    for rec in records:
+        if rec["idx"] in assigned:
+            continue
+
+        # this becomes the cluster’s "rep"
+        rep = rec
+        cluster = [rep]
+        assigned.add(rep["idx"])
+
+        # any unassigned that are "close" to rep?
+        for other in records:
+            if other["idx"] in assigned:
+                continue
+            dist = np.linalg.norm(rep["pred"] - other["pred"])
+            if dist < threshold:
+                cluster.append(other)
+                assigned.add(other["idx"])
+
+        clusters.append(cluster)
+
+    # 5) build final results: reps keep their scores, others zero out
+    zero_scores = {label: 0.0 for label in imagezap_labels}
+    results = [zero_scores.copy() for _ in urls]
+
+    for cluster in clusters:
+        # the first element is the largest
+        rep = cluster[0]
+        results[rep["idx"]] = {
+            label: float(score)
+            for label, score in zip(imagezap_labels, rep["pred"])
+        }
+
     return results
