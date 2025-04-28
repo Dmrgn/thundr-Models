@@ -55,9 +55,6 @@ with open('./data/vocab.json', 'r', encoding='utf-8') as f:
 word_index = tokenizer.get('word_index', {})
 text_to_sequence = create_text_processor(word_index, MAX_SEQ_LEN)
 
-import aiohttp
-import asyncio
-
 async def download_image( url: str, max_retries: int = 4, backoff_factor: float = 1.5) -> bytes | str:
     retry_statuses = {429, 502, 503, 504}
     for attempt in range(max_retries + 1):
