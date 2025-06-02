@@ -113,7 +113,7 @@ def preprocess_image_bytes(blob: bytes) -> tuple[tf.Tensor, int]:
     """
     try:
         decoded = tf.io.decode_image(blob, channels=3, expand_animations=True)
-    except tf.errors.InvalidArgumentError:
+    except:
         decoded = _decode_via_pillow(blob)
     # if animated (rank 4) → first frame
     if tf.rank(decoded) == 4:
@@ -184,6 +184,7 @@ def health() -> str:  # liveness probe
 @app.post("/textzap")
 async def textzap_route(payload: TextRequest) -> list[dict[str, float]]:
     batch = pad_sequences([text_to_sequence(t) for t in payload.requests], MAX_SEQ_LEN)
+    if len(batch) == 0: return []
     preds = await run_in_threadpool(textzap.predict, batch)
     return [
         {label: float(p[i]) for i, label in enumerate(textzap_labels)}

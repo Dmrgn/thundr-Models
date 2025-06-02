@@ -13,6 +13,7 @@ dependencies = [
     "matplotlib>=3.10.1",
     "numpy>=1.26.4",
     "pillow>=11.2.1",
+    "pillow-avif-plugin>=1.5.2",
     "tensorflow[and-cuda]==2.17",
     "uvicorn[standard]>=0.34.2",
 ]
